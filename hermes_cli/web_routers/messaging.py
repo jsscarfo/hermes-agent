@@ -22,7 +22,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    messaging_platforms_for_home, multiplexer_liveness_for_profile, resolve_gateway_liveness,
     retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
@@ -271,9 +271,19 @@ def _messaging_platform_payload(
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
+        allowed_raw = env_value("WHATSAPP_ALLOWED_USERS").strip()
+        if not allowed_raw:
+            allowed_kind, allowed_preview = "empty", ""
+        elif allowed_raw == "*":
+            # The wildcard is an allow-all flag, not a phone number. Do not echo it into the form.
+            allowed_kind, allowed_preview = "all", ""
+        else:
+            allowed_kind, allowed_preview = "list", allowed_raw
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
-            "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
+            "allowed_users_set": bool(allowed_raw),
+            "allowed_users_kind": allowed_kind,
+            "allowed_users_preview": allowed_preview,
             "home_channel_set": bool(home_channel),
         }
     return payload
@@ -297,7 +307,7 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
-            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
+            runtime = {**served[1], "platforms": messaging_platforms_for_home(served[1], own_home)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 
