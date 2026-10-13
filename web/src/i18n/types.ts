@@ -140,8 +140,6 @@ export interface Translations {
       hostProfileLabel: string;
       multiplexOn: string;
       ingressOwnedByHost: string;
-      colName: string;
-      colChatId: string;
       colChat: string;
       colKind: string;
       colProfile: string;
@@ -158,13 +156,13 @@ export interface Translations {
       remove: string;
       modalAddTitle: string;
       modalEditTitle: string;
-      fieldName: string;
-      fieldChatId: string;
-      fieldChatIdHint: string;
       fieldProfile: string;
       fieldProfileCountHint: string;
       fieldChat: string;
       fieldChatEmpty: string;
+      refreshChats: string;
+      refreshingChats: string;
+      refreshChatsFailed: string;
       modalApply: string;
     };
   };
