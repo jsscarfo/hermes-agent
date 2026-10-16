@@ -19,13 +19,13 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
-    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    derive_gateway_busy, derive_gateway_drainable, messaging_platforms_for_home,
+    normalize_updated_at, parse_active_agents, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
-from hermes_constants import get_process_hermes_home, profile_name_for_home
+from hermes_constants import get_process_hermes_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
@@ -308,9 +308,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        served_name = profile_dir.name if profile_dir is not None else profile_name_for_home(get_process_hermes_home())
+        own_home = profile_dir if profile_dir is not None else get_process_hermes_home()
         runtime = {**liveness.runtime,
-                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
+                   "platforms": messaging_platforms_for_home(liveness.runtime, own_home)}
 
     gateway_state = None
     gateway_platforms: dict = {}
