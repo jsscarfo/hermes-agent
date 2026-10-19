@@ -1408,11 +1408,11 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "With background=true: run in a pseudo-terminal for interactive CLI tools (Codex, Claude Code, Python REPL). Local backend only. Default: false.",
+                "description": "Background-only. With background=true: run in a pseudo-terminal for interactive CLI tools (Codex, Claude Code, Python REPL). Local backend only. Ignored when background is false. Default: false.",
                 "default": False
             },
             "notify": {
-                "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons.",
+                "description": "Background-only; ignored when background is false (a foreground result returns directly). With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons.",
                 "anyOf": [
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
@@ -1420,13 +1420,13 @@ TERMINAL_SCHEMA = {
             },
             "heartbeat": {
                 "type": "integer",
-                "minimum": 60,
-                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+                "minimum": 0,
+                "description": "Background-only; ignored when background is false, including a filled-in heartbeat on a foreground command. 0 means off. With background=true: also notify every N seconds (min 60; smaller positive values are raised to 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
             },
             "persist_on_release": {
                 "type": "boolean",
                 "default": False,
-                "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
+                "description": "Background-only; ignored when background is false. With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1450,35 +1450,49 @@ def _handle_terminal(args, **kw):
         )
     # `notify` is the advertised interface (true → notify_on_complete,
     # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
-    # with the corrected call instead of being silently ignored.
+    # `notify` wins. heartbeat/notify/pty/persist_on_release only apply to a
+    # tracked background process. Models that fill every optional field send
+    # them on foreground calls too (heartbeat:60, notify:false). Rejecting
+    # that makes the command impossible and the model repeats it until the
+    # identical-call guardrail halts the turn, so a foreground call drops them.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
+    pty = bool(args.get("pty", False))
+    if not args.get("background", False):
+        ignored = [
+            name for name, present in (
+                ("notify", notify not in (None, False)),
+                ("notify_on_complete", bool(notify_on_complete)),
+                ("watch_patterns", bool(watch_patterns)),
+                ("heartbeat", bool(heartbeat)),
+                ("pty", pty),
+                ("persist_on_release", persist_on_release),
+            )
+            if present
+        ]
+        if ignored:
+            logger.debug(
+                "terminal: ignoring background-only fields on a foreground command: %s",
+                ", ".join(ignored),
+            )
+        return terminal_tool(
+            command=args.get("command"),
+            background=False,
+            timeout=args.get("timeout"),
+            task_id=kw.get("task_id"),
+            session_id=kw.get("session_id"),
+            workdir=args.get("workdir"),
+            pty=False,
+            notify_on_complete=False,
+            watch_patterns=None,
+            heartbeat=0,
+            persist_on_release=False,
+        )
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
-    if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
-            return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
-                "terminal(command=..., background=true, notify=...)."
-            )
-        if args.get("pty", False):
-            return tool_error(
-                "pty requires background=true (a PTY session is interacted "
-                "with via process(action='write'/'submit'), which needs a "
-                "tracked background process). Retry as terminal(command=..., "
-                "background=true, pty=true)."
-            )
-        if persist_on_release:
-            return tool_error(
-                "persist_on_release only applies to background commands (a foreground "
-                "process is awaited inline and has nothing to persist). Retry as "
-                "terminal(command=..., background=true, persist_on_release=true)."
-            )
     if notify is not None:
         if isinstance(notify, bool):
             notify_on_complete = notify
@@ -1495,12 +1509,12 @@ def _handle_terminal(args, **kw):
         notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=True,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
-        pty=args.get("pty", False),
+        pty=pty,
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,

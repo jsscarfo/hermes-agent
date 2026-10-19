@@ -271,15 +271,23 @@ class TestTerminalToolSchema:
         assert array_alts and array_alts[0]["items"] == {"type": "string"}
 
 
-    def test_foreground_watch_patterns_rejected_with_teaching_error(self):
-        """Background-only modifiers on a foreground call fail loud with the
-        corrected call shape instead of being silently ignored."""
-        from tools.terminal_tool import _handle_terminal
+    def test_foreground_watch_patterns_are_ignored(self, monkeypatch):
+        """watch_patterns is background-only. A foreground call drops it and runs."""
+        from tools import terminal_tool as tt
+
+        captured = {}
+
+        def fake_terminal_tool(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"output": "hi", "exit_code": 0})
+
+        monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
         result = json.loads(
-            _handle_terminal({"command": "echo hi", "watch_patterns": ["ERR"]}, task_id="t1")
+            tt._handle_terminal({"command": "echo hi", "watch_patterns": ["ERR"]}, task_id="t1")
         )
-        assert "error" in result
-        assert "background=true" in result["error"]
+        assert not result.get("error")
+        assert captured["watch_patterns"] is None
+        assert captured["background"] is False
 
 
 # =========================================================================

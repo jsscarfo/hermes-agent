@@ -63,7 +63,36 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
-def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
+def test_foreground_call_ignores_filled_in_heartbeat_and_notify(monkeypatch):
+    """Models that fill optional fields send heartbeat:60 and notify:false on every
+    terminal call. A foreground command still runs; those fields are background-only."""
+    from tools import terminal_tool as tt
+
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"output": "ok", "exit_code": 0})
+
+    monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+    result = json.loads(tt._handle_terminal({
+        "command": "echo hi",
+        "heartbeat": 60,
+        "notify": False,
+        "pty": True,
+        "persist_on_release": True,
+    }))
+    assert not result.get("error")
+    assert captured["background"] is False
+    assert captured["heartbeat"] == 0
+    assert captured["notify_on_complete"] is False
+    assert captured["pty"] is False
+    assert captured["persist_on_release"] is False
+    # 0 is a valid "off" value, so a provider that enforces the schema accepts it.
+    assert tt.TERMINAL_SCHEMA["parameters"]["properties"]["heartbeat"]["minimum"] == 0
+
+
+def test_background_heartbeat_still_implies_notify(monkeypatch):
     from tools import terminal_tool as tt
 
     captured = {}
@@ -73,10 +102,7 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monke
         return json.dumps({"output": "Background process started", "session_id": "proc_x", "exit_code": 0})
 
     monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
-    dispatch = tt._handle_terminal
-    fg = json.loads(dispatch({"command": "sleep 1", "heartbeat": 120}))
-    assert fg.get("error") and "background" in fg["error"]
-
-    bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
-    assert "error" not in bg or not bg["error"]
+    bg = json.loads(tt._handle_terminal({"command": "sleep 1", "background": True, "heartbeat": 120}))
+    assert not bg.get("error")
     assert captured["heartbeat"] == 120 and captured["notify_on_complete"] is True
+    assert captured["background"] is True
