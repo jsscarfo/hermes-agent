@@ -490,3 +490,25 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+def test_needs_qr_publishes_logged_out_until_the_bridge_links():
+    adapter = _make_adapter()
+    adapter._running = True
+    writes = []
+    adapter._write_runtime_status_safe = lambda *args, **kwargs: writes.append(kwargs)
+    adapter._mark_connected = lambda: writes.append({"platform_state": "connected"})
+
+    adapter.note_bridge_link_status({"status": "needs_qr", "linked": False})
+    adapter.note_bridge_link_status({"status": "needs_qr"})
+
+    assert writes == [{
+        "platform_state": "needs_qr",
+        "error_code": "whatsapp_logged_out",
+        "error_message": adapter._NEEDS_QR_MESSAGE,
+        "needs_attention": True,
+    }]
+    assert adapter._running is True
+
+    adapter.note_bridge_link_status({"status": "connected", "linked": True})
+    assert writes[-1] == {"platform_state": "connected"}
