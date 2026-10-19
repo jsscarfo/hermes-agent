@@ -188,6 +188,19 @@ describe("cronLastResult", () => {
     });
   });
 
+  it("is red for a guardrail halt and shows the halt reason", () => {
+    expect(
+      cronLastResult({
+        last_status: "halted",
+        last_error: "guardrail_halt: identical_call_streak_halt",
+      }),
+    ).toEqual({
+      status: "halted",
+      tone: "destructive",
+      detail: "guardrail_halt: identical_call_streak_halt",
+    });
+  });
+
   it("is red for error and any unrecognised literal", () => {
     expect(cronLastResult({ last_status: "error", last_error: "boom" })).toEqual({
       status: "error",

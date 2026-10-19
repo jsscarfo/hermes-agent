@@ -133,6 +133,8 @@ const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
   delivery_failed: "warning",
   blocked_config: "warning",
   error: "destructive",
+  // Tool-guardrail stop (identical_call_streak_halt and the other halt codes).
+  halted: "destructive",
 };
 
 export function cronLastResult(

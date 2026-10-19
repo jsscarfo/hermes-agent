@@ -2001,6 +2001,31 @@ def _run_agent_with_watchdog(
     return result
 
 
+def _guardrail_halt_reason(result: dict) -> Optional[str]:
+    """Halt reason when the agent stopped on a tool guardrail, else None.
+
+    ``guardrail_halt`` (for example ``identical_call_streak_halt``) still returns a
+    final response with ``failed`` left false. Treating that as a healthy cron run
+    stamps ``last_status`` ``ok`` and clears ``last_error``, so the stop is invisible.
+    """
+    if not isinstance(result, dict):
+        return None
+    if str(result.get("turn_exit_reason") or "") != "guardrail_halt":
+        return None
+    guardrail = result.get("guardrail")
+    code = ""
+    message = ""
+    if isinstance(guardrail, dict):
+        code = str(guardrail.get("code") or "").strip()
+        message = str(guardrail.get("message") or "").strip()
+    reason = "guardrail_halt"
+    if code and code != "guardrail_halt":
+        reason = f"{reason}: {code}"
+    if message:
+        reason = f"{reason}: {message}"
+    return reason
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -2528,6 +2553,17 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        halt_reason = _guardrail_halt_reason(result)
+        if halt_reason:
+            # Distinct from a runtime error: the turn ended because a guardrail stopped
+            # it. ``_terminal_status`` is consumed by the completion write so last_status
+            # is ``halted`` and last_error keeps this reason.
+            job["_terminal_status"] = "halted"
+            logged_response = final_response if final_response else halt_reason
+            output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+            logger.warning("Job '%s' halted by a tool guardrail: %s", job_name, halt_reason)
+            _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), halt_reason)
+            return False, output, final_response, halt_reason
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
@@ -3082,6 +3118,11 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
+    # A guardrail stop is a failed run with its own status. Pop so the flag never
+    # lands in the job store; an explicit status (blocked_config) still wins.
+    terminal_status = job.pop("_terminal_status", None)
+    if terminal_status and not d.success and "status" not in mark_kwargs:
+        mark_kwargs["status"] = terminal_status
     # A run that removed its own record has nothing left to mark; the delivery above is its result.
     marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
         job["id"], d.success, d.error, **mark_kwargs)
