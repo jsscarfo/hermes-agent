@@ -66,9 +66,9 @@ def _xai_http(helper: str, fallback: Any, *args: Any, log: Optional[str] = None)
 
 def _resolve_xai_credentials() -> Tuple[str, str]:
     """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY``
-    (empty key = none; callers check). ``resolve_xai_http_credentials`` already applies the profile
-    secret scope to both fields, so a miss stays a miss: a raw ``os.getenv`` fallback here would hand a
-    multiplexed secondary the default profile's key after the scoped resolver correctly returned none."""
+    (empty key = none; callers check). The key inherits the process env and the default
+    profile ``.env`` when this profile does not define it. The base URL stays fail-closed,
+    so a secondary's request is not sent to another profile's host."""
     creds = _xai_http("resolve_xai_http_credentials", {}, log="xAI credential resolver failed: %s") or {}
     base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL)
     return str(creds.get("api_key") or "").strip(), base_url.strip().rstrip("/")
