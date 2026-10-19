@@ -45,9 +45,10 @@ def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, second
     assert GatewayTurnMixin._get_proxy_url(GatewayTurnMixin.__new__(GatewayTurnMixin)) is None
     assert "default.example" not in browserbase.BrowserbaseBrowserProvider()._get_config_or_none()["base_url"]
     assert "default.example" not in firecrawl.FirecrawlBrowserProvider()._api_url()
-    # xAI video: a scoped miss stays a miss — no environ fallback-after-miss for the key or the URL.
+    # xAI video: the API key inherits the process env; the base URL does not.
     api_key, base_url = xai_video._resolve_xai_credentials()
-    assert api_key == "" and "default.example" not in base_url
+    assert api_key == "https://xai_api_key.default.example/v1"
+    assert "default.example" not in base_url
 
 
 def test_unscoped_single_profile_reads_keep_environ(monkeypatch):

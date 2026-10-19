@@ -107,15 +107,20 @@ def missing_provider_credentials_message(provider_id: str) -> str:
         from hermes_cli.auth import PROVIDER_REGISTRY
         pconfig = PROVIDER_REGISTRY.get(provider_id)
     env_vars = tuple(getattr(pconfig, "api_key_env_vars", None) or ())
-    problem, remedy = "no API key was found", ""
+    problem, remedy, key_name = "no API key was found", "", ""
     if env_vars:
-        remedy = f"Set the {env_vars[0]} environment variable"
+        key_name = env_vars[0]
+        remedy = f"Set the {key_name} environment variable"
     elif pconfig is None:
-        remedy = f"Set the {provider_id.upper().replace('-', '_')}_API_KEY environment variable"
+        key_name = f"{provider_id.upper().replace('-', '_')}_API_KEY"
+        remedy = f"Set the {key_name} environment variable"
     elif str(pconfig.auth_type).startswith("oauth"):
         problem, remedy = "no credentials were found", f"Run `hermes auth add {provider_id}` to sign in"
     else:
         problem = "no credentials were found"
+    if key_name.endswith("_API_KEY"):
+        from agent.secret_scope import provider_api_key_lookup_places
+        remedy = f"{remedy} (looked in {', '.join(provider_api_key_lookup_places())})"
     switch = "switch to a different provider with `hermes model`."
     return (f"Provider '{provider_id}' is set in config.yaml but {problem}. "
             + (f"{remedy}, or {switch}" if remedy else switch.capitalize()))

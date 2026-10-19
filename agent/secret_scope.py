@@ -197,14 +197,71 @@ def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
     return val if val is not None else default
 
 
+def _is_provider_api_key(name: str) -> bool:
+    """Provider credentials (``OPENROUTER_API_KEY`` and the rest).
+
+    Bot tokens, base URLs, and other profile secrets do not use this suffix
+    and stay fail-closed under multiplexing.
+    """
+    return name.endswith("_API_KEY")
+
+
+def _nonempty_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _default_profile_dotenv_value(name: str) -> Optional[str]:
+    """Read ``name`` from the default profile ``.env`` without publishing it."""
+    try:
+        from hermes_constants import get_default_hermes_root
+        return load_env_file(get_default_hermes_root() / ".env").get(name)
+    except Exception:
+        return None
+
+
+def _inherited_provider_api_key(name: str) -> Optional[str]:
+    """Process env, then the default profile ``.env``, when the active profile omitted the key."""
+    found = _nonempty_secret(os.environ.get(name))
+    if found is not None:
+        return found
+    return _nonempty_secret(_default_profile_dotenv_value(name))
+
+
+def provider_api_key_lookup_places() -> list[str]:
+    """Where a missing provider API key was looked up, active profile first."""
+    places = []
+    bound = _SECRET_SCOPE.get()
+    if bound is not None and bound.profile_home:
+        places.append(f"active profile .env ({bound.profile_home}/.env)")
+    else:
+        places.append("active profile .env")
+    places.append("process environment")
+    try:
+        from hermes_constants import get_default_hermes_root, hermes_home_key
+        default_root = get_default_hermes_root()
+        active = bound.profile_home if bound is not None else None
+        same_home = bool(active) and hermes_home_key(active) == hermes_home_key(default_root)
+        if not same_home:
+            places.append(f"default profile .env ({default_root / '.env'})")
+    except Exception:
+        places.append("default profile .env")
+    return places
+
+
 def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """Resolve a credential by env-var name, honoring the active profile scope.
 
-    Global vars always read ``os.environ``. With a scope installed, a miss returns
-    ``default`` under multiplexing (never another profile's ``os.environ`` value)
-    but falls through to ``os.environ`` otherwise — single-profile deployments
-    inject credentials via the process env (systemd, ``op run``), so the scope
-    must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
+    Global vars always read ``os.environ``. With a scope installed, a present
+    value wins, including an explicit empty string (the profile cleared it).
+    A miss on a provider ``*_API_KEY`` falls through to the process environment
+    and then the default profile ``.env``. Every other miss returns ``default``
+    under multiplexing (never another profile's non-provider secret) but falls
+    through to ``os.environ`` otherwise — single-profile deployments inject
+    credentials via the process env (systemd, ``op run``), so the scope must
+    stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
     scope: multiplex INACTIVE reads ``os.environ``; ACTIVE raises (fail closed).
     """
     if _is_global_env(name):
@@ -214,6 +271,10 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = bound.mapping.get(name)
         if val is not None:
             return val
+        if _is_provider_api_key(name):
+            inherited = _inherited_provider_api_key(name)
+            if inherited is not None:
+                return inherited
         return default if (_MULTIPLEX_ACTIVE or serves_routed_profile()) else _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(

@@ -2809,9 +2809,11 @@ def get_env_value(key: str) -> Optional[str]:
 
     The ``os.environ`` read routes through ``agent.secret_scope.get_secret`` so that, under an active
     profile scope (multiplexed gateway turn), this is scope-checked rather than leaking another profile's
-    raw ``os.environ`` value. ``get_secret`` encodes the whole policy: global vars pass through; scope is
-    authoritative under multiplexing (miss -> None, no environ fallthrough); when multiplexing is off it
-    behaves exactly like the legacy ``os.environ`` read. Its siblings ``get_env_value_prefer_dotenv`` and
+    raw ``os.environ`` value. ``get_secret`` encodes the whole policy: global vars pass through; under
+    multiplexing a miss is None except for a provider ``*_API_KEY``, which falls through to the process
+    environment and then the default profile ``.env`` (an explicit empty profile value still wins); when
+    multiplexing is off it behaves exactly like the legacy ``os.environ`` read. Its siblings
+    ``get_env_value_prefer_dotenv`` and
     ``gateway.config._getenv`` already work this way — this was the last scope-blind reader of the trio
     (#67027).
     """

@@ -1,9 +1,9 @@
 """A fully-refusing init-time fallback ladder must say why at WARNING before dying.
 
 One burned primary (an exhausted single-entry OpenRouter pool, for example) plus fallback
-entries that cannot resolve credentials raises the generic ``No LLM provider configured``
-RuntimeError. Without a WARNING naming each refused entry and its reason, the failure is
-indistinguishable from actual config loss in gateway.log.
+entries that cannot resolve credentials raises. A pinned OpenRouter names the missing
+``OPENROUTER_API_KEY`` and where it was looked up. Without a WARNING naming each refused
+entry and its reason, the failure is indistinguishable from actual config loss in gateway.log.
 """
 
 import logging
@@ -50,11 +50,11 @@ class _Pool:
 @pytest.mark.parametrize(
     "primary, ladder, pool_available, raise_match, expected",
     [
-        ("openrouter", _LADDER, True, "No LLM provider configured", _LADDER_REASONS),
+        ("openrouter", _LADDER, True, "OPENROUTER_API_KEY", _LADDER_REASONS),
         # Explicit non-OpenRouter primary: provider-specific missing-credentials error.
         ("anthropic", _LADDER, True, "no API key was found", _LADDER_REASONS),
         # #119533: a burned primary pool with no ladder at all must still be named.
-        ("openrouter", [], False, "No LLM provider configured", ("credential pool exhausted",)),
+        ("openrouter", [], False, "OPENROUTER_API_KEY", ("credential pool exhausted",)),
     ],
 )
 def test_fully_refusing_ladder_warns_with_each_reason(

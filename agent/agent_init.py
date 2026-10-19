@@ -901,8 +901,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             "credential pool exhausted" if _pool_exhausted else "no usable credentials",
             "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
         )
-    if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-        # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
+    if _explicit and _explicit not in {"auto", "custom"}:
+        # A pinned provider, including openrouter, names the missing key. auto and
+        # bare custom keep the first-run message: custom may be a local no-key server.
         from agent.auxiliary_unavailable import missing_provider_credentials_message
         raise RuntimeError(missing_provider_credentials_message(_explicit))
     from hermes_constants import profile_cli_selector

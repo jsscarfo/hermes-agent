@@ -209,12 +209,20 @@ class TestOpenRouterCheckApiKey:
         with _Scope({"OPENROUTER_API_KEY": "sk-or-scoped"}):
             assert check_api_key() is True
 
-    def test_scoped_miss_no_borrow(self, monkeypatch):
+    def test_scoped_miss_inherits_process_env(self, monkeypatch):
         from tools.openrouter_client import check_api_key
 
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-process")
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
+            assert check_api_key() is True
+
+    def test_explicit_empty_key_does_not_inherit(self, monkeypatch):
+        from tools.openrouter_client import check_api_key
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-process")
+        ss.set_multiplex_active(True)
+        with _Scope({"OPENROUTER_API_KEY": ""}):
             assert check_api_key() is False
 
     def test_scope_failure_never_borrows_env(self, monkeypatch):
@@ -237,13 +245,15 @@ class TestAuxiliaryScopedKeyEnv:
         with _Scope({"OPENROUTER_API_KEY": "sk-scoped"}):
             assert _scoped_key_env("OPENROUTER_API_KEY") == "sk-scoped"
 
-    def test_scoped_miss_no_borrow(self, monkeypatch):
+    def test_scoped_miss_inherits_provider_key(self, monkeypatch):
         from agent.auxiliary_client import _scoped_key_env
 
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://other.example/v1")
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
-            assert _scoped_key_env("OPENAI_API_KEY") == ""
+            assert _scoped_key_env("OPENAI_API_KEY") == "sk-process"
+            assert _scoped_key_env("OPENAI_BASE_URL") == ""
 
     def test_unscoped_multiplex_falls_back(self, monkeypatch):
         from agent.auxiliary_client import _scoped_key_env

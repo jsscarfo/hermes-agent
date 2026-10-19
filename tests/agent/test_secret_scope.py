@@ -40,15 +40,28 @@ class TestMultiplexActiveFailClosed:
             ss.get_secret("ANTHROPIC_API_KEY")
 
 
-    def test_scoped_missing_key_returns_default_not_environ(self, monkeypatch):
-        # Even though the value exists in os.environ, a scope is authoritative:
-        # an absent scope key must NOT fall through to the (cross-profile) env.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+    def test_provider_api_key_miss_inherits_process_env(self, monkeypatch):
+        # A profile that does not define a provider key inherits the process
+        # env. Other secrets stay fail-closed so a bot token cannot leak.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-process")
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-mine"})
         try:
-            assert ss.get_secret("OPENAI_API_KEY") is None
-            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+            assert ss.get_secret("ANTHROPIC_API_KEY") == "sk-mine"
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-process"
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN") is None
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_explicit_empty_provider_key_blocks_inheritance(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-process")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OPENROUTER_API_KEY": ""})
+        try:
+            assert ss.get_secret("OPENROUTER_API_KEY") == ""
+            assert ss.get_secret("OPENROUTER_API_KEY", "d") == ""
         finally:
             ss.reset_secret_scope(token)
 
@@ -80,34 +93,36 @@ class TestScopedSingleProfile:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_multiplex_on_still_authoritative(self, monkeypatch):
-        # The fallthrough is strictly multiplex-off behavior: turning
-        # multiplexing on must restore scope-authoritative semantics.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+    def test_multiplex_on_provider_key_inherits_other_secrets_do_not(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("TEAM_B_KEY", "from-process")
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope({})
         try:
-            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-process"
+            assert ss.get_secret("TEAM_B_KEY") is None
         finally:
             ss.reset_secret_scope(token)
 
 
 class TestRoutedForeignHomeScope:
     """Multiplex OFF but the bound scope serves a DIFFERENT home (routed profile:
-    dashboard/desktop backend, per-profile cron ticker). os.environ is the LAUNCH
-    profile's env there, so a scoped miss must fail closed exactly like multiplex —
-    the .env-overlay fallthrough is only safe when the scope's home IS ours."""
+    dashboard/desktop backend, per-profile cron ticker). Provider API keys the
+    profile does not define inherit the process env and the default profile
+    .env. Every other secret stays fail-closed."""
 
-    def test_scoped_miss_under_foreign_home_returns_default(self, monkeypatch, tmp_path):
+    def test_scoped_miss_under_foreign_home_inherits_provider_keys(self, monkeypatch, tmp_path):
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-launch")
         home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
         token = ss.set_secret_scope({})
         try:
             assert ss.serves_routed_profile() is True
-            assert ss.get_secret("OPENAI_API_KEY") is None
-            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN") is None
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN", "d") == "d"
         finally:
             ss.reset_secret_scope(token)
             reset_hermes_home_override(home_token)
@@ -145,11 +160,13 @@ class TestRoutedForeignHomeScope:
         override (deliberate — those paths need the dispatcher's policy reads).
         The profile_home stamp makes serves_routed_profile see it anyway."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        monkeypatch.setenv("SOME_PROFILE_KEY", "not-a-provider-key")
         token = ss.set_secret_scope({}, profile_home=str(tmp_path / "other-profile"))
         try:
             assert ss.serves_routed_profile() is True
-            assert ss.get_secret("OPENAI_API_KEY") is None
-            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert ss.get_secret("SOME_PROFILE_KEY") is None
+            assert ss.get_secret("SOME_PROFILE_KEY", "d") == "d"
         finally:
             ss.reset_secret_scope(token)
 
@@ -169,8 +186,9 @@ class TestRoutedForeignHomeScope:
     def test_profile_runtime_scope_binds_foreign_home_e2e(self, monkeypatch, tmp_path):
         """End to end through the real binder: ``_profile_runtime_scope`` (the same
         guard the desktop backend and routed turns use) installs the home override +
-        secret scope together. Inside it, a miss must not borrow launch env, while
-        the foreign profile's own .env resolves and the adapter-facing reader agrees."""
+        secret scope together.         Inside it, a provider API key the profile omits inherits the process env,
+        while the foreign profile's own non-provider secret resolves and a
+        non-provider process value does not."""
         from gateway.platforms._shared import get_scoped_secret
         from gateway.run import _profile_runtime_scope
 
@@ -181,16 +199,16 @@ class TestRoutedForeignHomeScope:
 
         with _profile_runtime_scope(foreign, hydrate_secrets=False):
             assert ss.serves_routed_profile() is True
-            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
             assert ss.get_secret("TEAM_B_KEY") == "from-b"
-            # The reader adapters actually call takes the same fail-closed path.
-            assert get_scoped_secret("OPENAI_API_KEY") is None
+            assert get_scoped_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert get_scoped_secret("TEAM_B_KEY") == "from-b"
 
     def test_worker_profile_scope_bind_home_false_e2e(self, monkeypatch, tmp_path):
         """The kanban spawn-env build binds the assignee's secret scope with
         ``bind_home=False`` — no home override, because the passthrough POLICY
-        belongs to the dispatcher. The profile_home stamp must still make scoped
-        misses fail closed, or the dispatcher's env leaks into B's worker env."""
+        belongs to the dispatcher. Provider API keys still inherit the process
+        env. Other secrets stay on the assignee's own mapping."""
         from hermes_cli.kanban_db_dispatch import _worker_profile_scope
 
         foreign = tmp_path / "profiles" / "assignee"
@@ -200,8 +218,36 @@ class TestRoutedForeignHomeScope:
 
         with _worker_profile_scope(str(foreign), bind_home=False):
             assert ss.serves_routed_profile() is True
-            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-dispatcher"
             assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
+
+
+def test_provider_key_falls_back_to_default_profile_dotenv(monkeypatch, tmp_path):
+    """A profile .env that omits the key inherits the default profile file when the process env lacks it."""
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / ".env").write_text("OPENROUTER_API_KEY=sk-default-file\n", encoding="utf-8")
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({}, profile_home=str(profile))
+    try:
+        assert ss.get_secret("OPENROUTER_API_KEY") == "sk-default-file"
+        places = " ".join(ss.provider_api_key_lookup_places())
+        assert "active profile .env" in places
+        assert "process environment" in places
+        assert "default profile .env" in places
+        assert str(profile) in places
+    finally:
+        ss.reset_secret_scope(token)
+
+    token = ss.set_secret_scope({"OPENROUTER_API_KEY": "sk-profile"}, profile_home=str(profile))
+    try:
+        assert ss.get_secret("OPENROUTER_API_KEY") == "sk-profile"
+    finally:
+        ss.reset_secret_scope(token)
 
 
 class TestScopeSetupRecovery:
@@ -544,9 +590,11 @@ class TestSecretScopeAcrossExecutorThreads:
             # The scope (authoritative under multiplex) must reach the worker.
             seen = pool.submit(ss.get_secret, "SURPLUS_API_KEY").result(timeout=10)
             assert seen == "scope-key"
-            # A scoped miss must still not borrow the (cross-profile) env value.
-            monkeypatch.setenv("OPENAI_API_KEY", "env-leak")
-            assert pool.submit(ss.get_secret, "OPENAI_API_KEY").result(timeout=10) is None
+            # Provider keys inherit the process env; other secrets do not.
+            monkeypatch.setenv("OPENAI_API_KEY", "env-process")
+            monkeypatch.setenv("RELAY_TOKEN", "env-leak")
+            assert pool.submit(ss.get_secret, "OPENAI_API_KEY").result(timeout=10) == "env-process"
+            assert pool.submit(ss.get_secret, "RELAY_TOKEN").result(timeout=10) is None
         finally:
             pool.shutdown(wait=True)
             ss.reset_secret_scope(token)

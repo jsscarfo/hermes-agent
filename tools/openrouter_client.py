@@ -6,10 +6,10 @@ import os
 def check_api_key() -> bool:
     """Return True if OPENROUTER_API_KEY is present.
 
-    Scope-aware: an installed profile secret scope is authoritative under
-    multiplex; unscoped CLI probes fall back to the plain env read. Any other
-    scope failure propagates -- a failed scoped read must never silently
-    borrow another profile's key from ``os.environ``.
+    Scope-aware: a profile value wins, including an explicit empty string. A
+    profile that does not define the key inherits the process environment and
+    the default profile ``.env``. Unscoped multiplex reads still fail closed.
+    Any other scope failure propagates.
     """
     from agent.secret_scope import UnscopedSecretError, get_secret
 

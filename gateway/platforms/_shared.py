@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 def get_scoped_secret(name: str, default: Any = None, *, external_fallback: bool = False) -> Any:
     """Scope-aware credential read with the default-profile startup fallback.
 
-    An installed profile secret scope is authoritative: a scoped miss returns
-    ``default`` (never borrow another profile's value from ``os.environ``).
+    An installed profile secret scope is authoritative for anything that is not a
+    provider ``*_API_KEY``: a scoped miss returns ``default``. Provider API keys
+    the profile does not define fall through to the process environment and the
+    default profile ``.env`` (``get_secret``); an explicit empty profile value wins.
     The DEFAULT profile constructs and sends *unscoped* under multiplexing,
     where a bare ``get_secret`` raises ``UnscopedSecretError``; there
     ``os.environ`` is that profile's own value, so fall back to it.

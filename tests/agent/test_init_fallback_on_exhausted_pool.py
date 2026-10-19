@@ -111,15 +111,14 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
         assert agent._fallback_activated is True
 
 
-def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
-    """openrouter exhausted + no usable fallback keeps the generic
-    'No LLM provider configured' error (not the named-provider one)."""
+def test_init_openrouter_exhausted_without_chain_names_the_missing_key():
+    """A pinned openrouter with no usable key names OPENROUTER_API_KEY and where it looked."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
          patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
-        with pytest.raises(RuntimeError, match="No LLM provider configured"):
+        with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY") as exc:
             AIAgent(
                 provider="openrouter",
                 model="z-ai/glm-5.2:free",
@@ -131,3 +130,7 @@ def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
                 fallback_model=[{"provider": "openrouter",
                                  "model": "poolside/laguna-s-2.1:free"}],
             )
+        message = str(exc.value)
+        assert "looked in" in message
+        assert "active profile .env" in message
+        assert "process environment" in message

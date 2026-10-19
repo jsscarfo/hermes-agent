@@ -40,13 +40,18 @@ def test_scoped_value_wins_over_environ(monkeypatch):
         assert get_env_value("OPENAI_API_KEY") == "sk-this-profile"
 
 
-def test_multiplexed_scope_miss_does_not_leak_environ(monkeypatch, tmp_path):
-    """The #67027 repro: envless named profile must NOT inherit the other
-    profile's credential from process environ during a multiplexed turn."""
+def test_multiplexed_scope_miss_inherits_provider_keys_only(monkeypatch, tmp_path):
+    """A profile that omits a provider API key inherits the process env.
+
+    Non-provider secrets stay fail-closed: a bot token in the process env is
+    not this profile's token.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
-    with _scope({}, multiplex=True):  # profile has no .env / empty scope
-        assert get_env_value("OPENAI_API_KEY") is None
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-other")
+    with _scope({}, multiplex=True):
+        assert get_env_value("OPENAI_API_KEY") == "sk-process"
+        assert get_env_value("TELEGRAM_BOT_TOKEN") is None
 
 
 def test_multiplex_off_scope_miss_falls_back_to_environ(monkeypatch):
