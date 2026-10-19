@@ -139,6 +139,8 @@ export interface Translations {
       hostIntro: string;
       hostProfileLabel: string;
       multiplexOn: string;
+      multiplexOff?: string;
+      multiplexUnset?: string;
       ingressOwnedByHost: string;
       colChat: string;
       colKind: string;
@@ -160,6 +162,7 @@ export interface Translations {
       fieldProfileCountHint: string;
       fieldChat: string;
       fieldChatEmpty: string;
+      fieldChatManual?: string;
       refreshChats: string;
       refreshingChats: string;
       refreshChatsFailed: string;
