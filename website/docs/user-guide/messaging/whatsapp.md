@@ -113,9 +113,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
-This is consistent with [Signal group allowlists](/reference/environment-variables).
+This is consistent with [Signal group allowlists](../../reference/environment-variables.md).
 To use the pairing flow instead, remove both variables and rely on the
-[DM pairing system](/user-guide/security#dm-pairing-system).
+[DM pairing system](../security.md#dm-pairing-system).
 :::
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -130,6 +130,20 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Group chats (bot mode)
+
+Groups are gated by **group policy**, not by the DM allowlist. `WHATSAPP_GROUP_POLICY` / `whatsapp.group_policy`
+defaults to `pairing`, which forwards nothing from groups. `allowlist` plus `WHATSAPP_GROUP_ALLOWED_USERS` /
+`whatsapp.group_allow_from` (comma-separated **group JIDs**, e.g. `120363001234567890@g.us`) admits the listed
+groups; `open` admits every group the bot is a member of. The sender is then checked like any other gateway
+principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or paired) — a sender WhatsApp
+addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
+`lid-mapping` file yet is not dropped; with no sender allowlist,
+`allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
+message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
+bot, or `/commands` (groups in `free_response_chats` are exempt).
+
 Then start the gateway:
 
 ```bash
@@ -139,6 +153,22 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
+
+---
+
+## One number, many profiles
+
+With [multiplexing](../multi-profile-gateways.md#alternative-one-gateway-for-all-profiles-multiplexing) on, **Channels → WhatsApp** edits the WhatsApp rows of `gateway.profile_routes` on the host (default) profile. The bridge stays on that profile. A secondary profile does not start a second bridge.
+
+- One group routes to one profile. A profile can own several groups.
+- A chat that matches no route stays on the default profile.
+- **Add route** lists chats the bridge has already received that are not routed yet. The count on the button is how many of those chats are waiting. **Refresh chats**, at the bottom of that dialog, reloads the list after a new message. If the bridge has not listed any chats, enter the group JID or phone number directly.
+- The table shows the WhatsApp group subject, or the contact name when one is known. The numeric id is a tooltip. The text of the last message is not used as the name.
+- Saving writes the route table. It does not restart the gateway. A running gateway re-reads `config.yaml` and applies the new route on the next inbound message.
+- If the WhatsApp card says the bridge is down, the gateway process can still be running. Chats are not answered until the bridge connects. The gateway retries the bridge on its own.
+- The target list shows how many WhatsApp chats already route to each profile, including rows you have not saved yet.
+
+The same rows can be written by hand. See [Routing shared-bot chats to profiles](../multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes).
 
 ---
 
@@ -154,16 +184,19 @@ The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session
 
 ## Re-pairing
 
-If the session breaks (phone reset, WhatsApp update, manually unlinked), you'll see connection
-errors in the gateway logs. To fix it:
+If the session breaks (phone reset, WhatsApp update, manually unlinked), the bridge deletes
+the saved session and reports **Needs QR**. The dashboard Channels page stops showing
+**Linked** — that badge follows the live bridge connection, not the presence of
+`creds.json`. Pair with QR from the dashboard, or run:
 
 ```bash
 hermes whatsapp
 ```
 
-This generates a fresh QR code. Scan it again and the session is re-established. The gateway
-handles **temporary** disconnections (network blips, phone going offline briefly) automatically
-with reconnection logic.
+Either path generates a fresh QR code. Scan it again and the session is re-established.
+A logged-out session is removed, not backed up. The gateway handles **temporary**
+disconnections (network blips, phone going offline briefly) automatically with
+reconnection logic and does not delete the session for those.
 
 ---
 
@@ -173,7 +206,7 @@ Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -224,7 +257,7 @@ All of this works out of the box in bot (Baileys) mode; no configuration needed.
 
 ### Message Batching (Debounce)
 
-WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **0.3s**, extended to **1s** for very long fragments; capped at 2s / 4s). Tune via `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -232,11 +265,15 @@ gateway:
   platforms:
     whatsapp:
       extra:
-        text_batch_delay_seconds: 5.0         # quiet period before flushing a batch
-        text_batch_split_delay_seconds: 10.0  # extended delay near the split threshold
+        text_batch_delay_seconds: 0.3         # quiet period before flushing a batch (max 2.0)
+        text_batch_split_delay_seconds: 1.0   # extended delay near the split threshold (max 4.0)
 ```
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
+
+### Quoted Replies
+
+Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
 ---
 
@@ -247,7 +284,7 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
 | **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
-| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
+| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. The bridge deletes the dead session and the dashboard shows Needs QR. Pair with QR from Channels, or run `hermes whatsapp`. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |

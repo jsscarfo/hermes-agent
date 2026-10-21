@@ -40,15 +40,28 @@ class TestMultiplexActiveFailClosed:
             ss.get_secret("ANTHROPIC_API_KEY")
 
 
-    def test_scoped_missing_key_returns_default_not_environ(self, monkeypatch):
-        # Even though the value exists in os.environ, a scope is authoritative:
-        # an absent scope key must NOT fall through to the (cross-profile) env.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+    def test_provider_api_key_miss_inherits_process_env(self, monkeypatch):
+        # A profile that does not define a provider key inherits the process
+        # env. Other secrets stay fail-closed so a bot token cannot leak.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-process")
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-mine"})
         try:
-            assert ss.get_secret("OPENAI_API_KEY") is None
-            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+            assert ss.get_secret("ANTHROPIC_API_KEY") == "sk-mine"
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-process"
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN") is None
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_explicit_empty_provider_key_blocks_inheritance(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-process")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"OPENROUTER_API_KEY": ""})
+        try:
+            assert ss.get_secret("OPENROUTER_API_KEY") == ""
+            assert ss.get_secret("OPENROUTER_API_KEY", "d") == ""
         finally:
             ss.reset_secret_scope(token)
 
@@ -80,16 +93,221 @@ class TestScopedSingleProfile:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_multiplex_on_still_authoritative(self, monkeypatch):
-        # The fallthrough is strictly multiplex-off behavior: turning
-        # multiplexing on must restore scope-authoritative semantics.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
+    def test_multiplex_on_provider_key_inherits_other_secrets_do_not(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-process")
+        monkeypatch.setenv("TEAM_B_KEY", "from-process")
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope({})
         try:
-            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-process"
+            assert ss.get_secret("TEAM_B_KEY") is None
         finally:
             ss.reset_secret_scope(token)
+
+
+class TestRoutedForeignHomeScope:
+    """Multiplex OFF but the bound scope serves a DIFFERENT home (routed profile:
+    dashboard/desktop backend, per-profile cron ticker). Provider API keys the
+    profile does not define inherit the process env and the default profile
+    .env. Every other secret stays fail-closed."""
+
+    def test_scoped_miss_under_foreign_home_inherits_provider_keys(self, monkeypatch, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-launch")
+        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        token = ss.set_secret_scope({})
+        try:
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN") is None
+            assert ss.get_secret("TELEGRAM_BOT_TOKEN", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_scoped_miss_under_own_home_keeps_env_overlay(self, monkeypatch, tmp_path):
+        """The deliberate single-profile overlay: a scope bound for the process's
+        own home still falls through to os.environ (systemd / op run credentials)."""
+        from hermes_constants import get_process_hermes_home, set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
+        home_token = set_hermes_home_override(str(get_process_hermes_home()))
+        token = ss.set_secret_scope({})
+        try:
+            assert ss.serves_routed_profile() is False
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_scope_hit_under_foreign_home_still_wins(self, monkeypatch, tmp_path):
+        """A scoped hit is unaffected: only the miss branch changes."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        token = ss.set_secret_scope({"OPENAI_API_KEY": "sk-served-profile"})
+        try:
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-served-profile"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_stamped_foreign_scope_miss_fails_closed_without_override(self, monkeypatch, tmp_path):
+        """The kanban/MCP shape: a foreign-home scope bound WITHOUT the HERMES_HOME
+        override (deliberate — those paths need the dispatcher's policy reads).
+        The profile_home stamp makes serves_routed_profile see it anyway."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        monkeypatch.setenv("SOME_PROFILE_KEY", "not-a-provider-key")
+        token = ss.set_secret_scope({}, profile_home=str(tmp_path / "other-profile"))
+        try:
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert ss.get_secret("SOME_PROFILE_KEY") is None
+            assert ss.get_secret("SOME_PROFILE_KEY", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_stamped_own_home_scope_keeps_env_overlay(self, monkeypatch):
+        """A scope stamped with the process's own home is not routed: env
+        fallthrough stays, matching launch_secret_scope's documented precedence."""
+        from hermes_constants import get_process_hermes_home
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
+        token = ss.set_secret_scope({}, profile_home=str(get_process_hermes_home()))
+        try:
+            assert ss.serves_routed_profile() is False
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_profile_runtime_scope_binds_foreign_home_e2e(self, monkeypatch, tmp_path):
+        """End to end through the real binder: ``_profile_runtime_scope`` (the same
+        guard the desktop backend and routed turns use) installs the home override +
+        secret scope together.         Inside it, a provider API key the profile omits inherits the process env,
+        while the foreign profile's own non-provider secret resolves and a
+        non-provider process value does not."""
+        from gateway.platforms._shared import get_scoped_secret
+        from gateway.run import _profile_runtime_scope
+
+        foreign = tmp_path / "profiles" / "team_b"
+        foreign.mkdir(parents=True)
+        (foreign / ".env").write_text("TEAM_B_KEY=from-b\n", encoding="utf-8")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+
+        with _profile_runtime_scope(foreign, hydrate_secrets=False):
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert ss.get_secret("TEAM_B_KEY") == "from-b"
+            assert get_scoped_secret("OPENAI_API_KEY") == "sk-launch-profile"
+            assert get_scoped_secret("TEAM_B_KEY") == "from-b"
+
+    def test_worker_profile_scope_bind_home_false_e2e(self, monkeypatch, tmp_path):
+        """The kanban spawn-env build binds the assignee's secret scope with
+        ``bind_home=False`` — no home override, because the passthrough POLICY
+        belongs to the dispatcher. Provider API keys still inherit the process
+        env. Other secrets stay on the assignee's own mapping."""
+        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+
+        foreign = tmp_path / "profiles" / "assignee"
+        foreign.mkdir(parents=True)
+        (foreign / ".env").write_text("ASSIGNEE_KEY=from-assignee\n", encoding="utf-8")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-dispatcher")
+
+        with _worker_profile_scope(str(foreign), bind_home=False):
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-dispatcher"
+            assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
+
+
+def test_provider_key_falls_back_to_default_profile_dotenv(monkeypatch, tmp_path):
+    """A profile .env that omits the key inherits the default profile file when the process env lacks it."""
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / ".env").write_text("OPENROUTER_API_KEY=sk-default-file\n", encoding="utf-8")
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({}, profile_home=str(profile))
+    try:
+        assert ss.get_secret("OPENROUTER_API_KEY") == "sk-default-file"
+        places = " ".join(ss.provider_api_key_lookup_places())
+        assert "active profile .env" in places
+        assert "process environment" in places
+        assert "default profile .env" in places
+        assert str(profile) in places
+    finally:
+        ss.reset_secret_scope(token)
+
+    token = ss.set_secret_scope({"OPENROUTER_API_KEY": "sk-profile"}, profile_home=str(profile))
+    try:
+        assert ss.get_secret("OPENROUTER_API_KEY") == "sk-profile"
+    finally:
+        ss.reset_secret_scope(token)
+
+
+class TestScopeSetupRecovery:
+    """A raise mid-scope-setup must release whatever was already bound — a leaked
+    HERMES_HOME override or secret scope silently re-homes every later read in
+    the caller's context."""
+
+    def test_profile_runtime_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home_override
+
+        foreign = tmp_path / "profiles" / "b"
+        foreign.mkdir(parents=True)
+
+        def boom(home):
+            raise RuntimeError("corrupt profile home")
+
+        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        with pytest.raises(RuntimeError):
+            with _profile_runtime_scope(foreign, hydrate_secrets=False):
+                pass
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
+
+    def test_worker_profile_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
+        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+        from hermes_constants import get_hermes_home_override
+
+        foreign = tmp_path / "profiles" / "assignee"
+        foreign.mkdir(parents=True)
+
+        def boom(home):
+            raise RuntimeError("corrupt profile home")
+
+        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        with pytest.raises(RuntimeError):
+            with _worker_profile_scope(str(foreign), bind_home=True):
+                pass
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
+
+    def test_model_switch_bind_releases_partial_scopes_on_raise(self, monkeypatch, tmp_path):
+        """The scopes object never reaches the caller when the bind raises, so the
+        bind must release what it already bound (home override + secret scope).
+        Driven through ``server`` — the split module's functions run rebound on
+        server.py's globals (``bind_module``)."""
+        from tui_gateway import server
+        from hermes_constants import get_hermes_home_override
+
+        home = tmp_path / "profiles" / "b"
+        home.mkdir(parents=True)
+
+        def boom(home, env_overlay=None):
+            raise RuntimeError("terminal policy unreadable")
+
+        monkeypatch.setattr("tools.terminal_scope.install_profile_terminal_scope", boom)
+        with pytest.raises(RuntimeError):
+            server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
 
 
 class TestScopeIsolation:
@@ -347,3 +565,50 @@ class TestRelayRoutingStampGlobals:
             ss.set_multiplex_active(False)
         for name in self.AUTH_VARS:
             assert not ss._is_global_env(name), name
+
+
+class TestSecretScopeAcrossExecutorThreads:
+    """Multiplexed profile state must reach pool workers (see #95119).
+
+    The context-compression timeout fence runs auxiliary LLM calls in a
+    daemon thread pool.  Bundled CPython runtime builds omit
+    ``ThreadPoolExecutor``'s context propagation, so the profile secret
+    scope was absent in the worker and ``get_secret`` failed closed with
+    ``UnscopedSecretError``, silently degrading compression to lossy
+    deterministic summaries.  ``DaemonThreadPoolExecutor.submit`` restores
+    stdlib context semantics; these tests lock that in.
+    """
+
+    def test_scoped_read_works_in_daemon_pool_worker(self, monkeypatch):
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+
+        monkeypatch.setenv("SURPLUS_API_KEY", "env-key")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SURPLUS_API_KEY": "scope-key"})
+        pool = DaemonThreadPoolExecutor(max_workers=1)
+        try:
+            # The scope (authoritative under multiplex) must reach the worker.
+            seen = pool.submit(ss.get_secret, "SURPLUS_API_KEY").result(timeout=10)
+            assert seen == "scope-key"
+            # Provider keys inherit the process env; other secrets do not.
+            monkeypatch.setenv("OPENAI_API_KEY", "env-process")
+            monkeypatch.setenv("RELAY_TOKEN", "env-leak")
+            assert pool.submit(ss.get_secret, "OPENAI_API_KEY").result(timeout=10) == "env-process"
+            assert pool.submit(ss.get_secret, "RELAY_TOKEN").result(timeout=10) is None
+        finally:
+            pool.shutdown(wait=True)
+            ss.reset_secret_scope(token)
+
+
+class TestUnscopedSecretErrorSignature:
+    def test_named_secret_leads_the_user_sentence(self):
+        err = ss.UnscopedSecretError("SURPLUS_API_KEY", "get_secret('SURPLUS_API_KEY') with no scope")
+        assert err.secret_name == "SURPLUS_API_KEY" and "SURPLUS_API_KEY" in str(err)
+        assert err.developer_detail in getattr(err, "__notes__", [])
+
+    def test_legacy_single_message_positional_is_the_developer_detail(self):
+        """Older callers passed the whole sentence positionally; it must not be read as a name."""
+        err = ss.UnscopedSecretError("get_secret('X') called with no profile secret scope active.")
+        assert err.secret_name == ""
+        assert err.developer_detail.startswith("get_secret('X')")
+        assert "get_secret" not in str(err)
