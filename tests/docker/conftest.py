@@ -44,6 +44,10 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 - pytest hook
     for item in items:
         if "tests/docker/" not in str(item.fspath).replace(os.sep, "/"):
             continue
+        # volume-cleanup is a stdlib boot script. Its tests build a temp
+        # tree and must run on the Python lane, where no Docker daemon exists.
+        if item.fspath.basename == "test_volume_cleanup.py":
+            continue
         if not docker_ok:
             item.add_marker(skip_docker)
 
