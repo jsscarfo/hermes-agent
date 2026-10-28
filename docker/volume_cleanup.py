@@ -5,6 +5,11 @@ Logs every candidate and its size, then deletes only that candidate. Missing
 paths are skipped. Nothing outside the data root is deleted. Safe to run
 twice: the second run finds the paths gone and skips them.
 
+One summary line (paths removed and bytes freed) is printed and written to
+``<data>/logs/volume-cleanup.log``. The directory is created when missing.
+The file is never written through a symlink or outside the data root.
+Production data root is /opt/data, so the file is /opt/data/logs/volume-cleanup.log.
+
 Production uses /opt/data and /opt/hermes/.venv. Tests pass other roots.
 """
 
@@ -23,6 +28,7 @@ from pathlib import Path
 STALE_INSTALL_PREFIX = "351f81cc"
 ROTATED_LOG_GLOBS = ("agent.log.[0-9]*", "errors.log.[0-9]*")
 PLUGIN_INSTALL_LEFTOVERS = (".install-rqzgcdjx", ".install-61yo688a")
+SUMMARY_LOG_NAME = "volume-cleanup.log"
 RECORD_NAMES = {
     "config.yaml",
     "config.yml",
@@ -150,17 +156,21 @@ def _log_free(label: str, data: Path) -> None:
     )
 
 
-def _delete(path: Path, data: Path) -> None:
-    """Log the path and its size, then delete it if it stays inside data."""
+def _delete(path: Path, data: Path) -> tuple[bool, int]:
+    """Log the path and its size, then delete it if it stays inside data.
+
+    Returns whether the path was removed and how many bytes ``byte_size``
+    reported before the delete. A skip returns ``(False, 0)``.
+    """
     if not os.path.lexists(path):
         _log(f"skip missing {path}")
-        return
+        return False, 0
     if _absolute(path) == _absolute(data):
         _log(f"skip {path} bytes={byte_size(path)} reason=refuses to delete the data root")
-        return
+        return False, 0
     if not _within(path, data):
         _log(f"skip {path} bytes={byte_size(path)} reason=outside {data}")
-        return
+        return False, 0
     size = byte_size(path)
     try:
         if path.is_symlink():
@@ -169,7 +179,7 @@ def _delete(path: Path, data: Path) -> None:
             path.unlink()
         elif not _resolved_within(path, data):
             _log(f"skip {path} bytes={size} reason=resolves outside {data}")
-            return
+            return False, 0
         else:
             _log(f"dry-run {path} bytes={size}")
             if path.is_dir():
@@ -178,8 +188,15 @@ def _delete(path: Path, data: Path) -> None:
                 path.unlink()
     except OSError as exc:
         _log(f"skip {path} bytes={size} reason={exc}")
-        return
+        return False, 0
     _log(f"deleted {path}")
+    return True, size
+
+
+def _delete_counted(path: Path, data: Path, removed: list[tuple[Path, int]]) -> None:
+    deleted, size = _delete(path, data)
+    if deleted:
+        removed.append((_absolute(path), size))
 
 
 def _fnmatch_rotated(name: str) -> bool:
@@ -213,7 +230,7 @@ def _rotated_log_dirs(data: Path) -> list[Path]:
     return dirs
 
 
-def _clean_rotated_logs(data: Path) -> None:
+def _clean_rotated_logs(data: Path, removed: list[tuple[Path, int]]) -> None:
     for logs in _rotated_log_dirs(data):
         if not os.path.lexists(logs):
             if logs == data / "logs":
@@ -235,7 +252,7 @@ def _clean_rotated_logs(data: Path) -> None:
             _log(f"no rotated agent/errors logs in {logs}")
             continue
         for match in matches:
-            _delete(match, data)
+            _delete_counted(match, data, removed)
 
 
 def install_key(project: Path) -> str:
@@ -463,7 +480,7 @@ def _cache_block_reason(cache: Path, venv: Path, live_dirs: list[Path]) -> str |
     return None
 
 
-def _clean_cache(data: Path, venv: Path, live_dirs: list[Path]) -> None:
+def _clean_cache(data: Path, venv: Path, live_dirs: list[Path], removed: list[tuple[Path, int]]) -> None:
     cache = data / "cache" / "uv"
     if not os.path.lexists(cache):
         _log(f"skip missing {cache}")
@@ -476,10 +493,16 @@ def _clean_cache(data: Path, venv: Path, live_dirs: list[Path]) -> None:
     if reason:
         _log(f"skip {cache} bytes={byte_size(cache)} reason={reason}")
         return
-    _delete(cache, data)
+    _delete_counted(cache, data, removed)
 
 
-def _clean_stale_installs(data: Path, active: Path | None, active_reason: str) -> None:
+def _clean_stale_installs(
+    data: Path,
+    active: Path | None,
+    active_reason: str,
+    project: Path,
+    removed: list[tuple[Path, int]],
+) -> None:
     pattern = data / "installs" / f"{STALE_INSTALL_PREFIX}*"
     installs = data / "installs"
     if not installs.is_dir() or installs.is_symlink():
@@ -496,7 +519,14 @@ def _clean_stale_installs(data: Path, active: Path | None, active_reason: str) -
     if not matches:
         _log(f"skip missing {pattern}")
         return
+    project_key = install_key(project)
     for candidate in matches:
+        if candidate.name == project_key:
+            # 351f81cc06284494 is sha256("/opt/hermes")[:16]: the project's own
+            # install key, i.e. the live toolchain. Never a stale directory,
+            # even when another install has a selected environment.
+            _log(f"skip {candidate} bytes={byte_size(candidate)} reason=is the install key of {project}")
+            continue
         if active is None or _absolute(active) == _absolute(candidate) or _same_or_under(active, candidate):
             _log(
                 f"skip {candidate} bytes={byte_size(candidate)} "
@@ -513,7 +543,65 @@ def _clean_stale_installs(data: Path, active: Path | None, active_reason: str) -
                 _log(f"skip {candidate} bytes={byte_size(candidate)} reason=referenced by {ref}")
             continue
         _log(f"active toolchain {active} ({active_reason})")
-        _delete(candidate, data)
+        _delete_counted(candidate, data, removed)
+
+
+def _summary_line(removed: list[tuple[Path, int]]) -> str:
+    ordered = sorted(removed, key=lambda item: str(item[0]))
+    total = sum(size for _path, size in ordered)
+    paths = ",".join(str(path) for path, _size in ordered)
+    return f"[volume-cleanup] summary removed={len(ordered)} bytes_freed={total} paths={paths}"
+
+
+def _write_summary_file(data: Path, line: str) -> None:
+    """Write ``line`` to ``<data>/logs/volume-cleanup.log``, or skip.
+
+    Creates ``logs`` when it is missing. Refuses a symlink and any path that
+    resolves outside the data root, so a hostile ``logs`` link cannot publish
+    the summary somewhere else.
+    """
+    if not data.is_dir() or data.is_symlink():
+        return
+    logs = data / "logs"
+    if logs.is_symlink() or not _within(logs, data):
+        _log(f"skip summary file reason=refuses to write outside {data}")
+        return
+    try:
+        if logs.exists() and (not logs.is_dir() or not _resolved_within(logs, data)):
+            _log(f"skip summary file reason=logs dir resolves outside {data}")
+            return
+        logs.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _log(f"skip summary file reason={exc}")
+        return
+    if logs.is_symlink() or not logs.is_dir() or not _resolved_within(logs, data):
+        _log(f"skip summary file reason=logs dir resolves outside {data}")
+        return
+    target = logs / SUMMARY_LOG_NAME
+    if target.is_symlink() or not _within(target, data):
+        _log(f"skip summary file reason=refuses to write outside {data}")
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    try:
+        fd = os.open(target, flags, 0o644)
+    except OSError as exc:
+        _log(f"skip summary file reason={exc}")
+        return
+    try:
+        os.write(fd, (line + "\n").encode("utf-8"))
+    except OSError as exc:
+        _log(f"skip summary file reason={exc}")
+    finally:
+        os.close(fd)
+
+
+def _emit_summary(data: Path, removed: list[tuple[Path, int]]) -> None:
+    line = _summary_line(removed)
+    print(line, flush=True)
+    _write_summary_file(data, line)
 
 
 def cleanup(data: Path, venv: Path, project: Path) -> None:
@@ -521,28 +609,32 @@ def cleanup(data: Path, venv: Path, project: Path) -> None:
     data = _absolute(data)
     venv = _absolute(venv)
     project = _absolute(project)
-    _log_free("before", data)
-    if not data.is_dir():
-        _log(f"skip: {data} is not a directory")
-        _log_free("after", data)
-        return
-    _clean_rotated_logs(data)
-    plugins = data / "plugins"
-    for name in PLUGIN_INSTALL_LEFTOVERS:
-        _delete(plugins / name, data)
-    _delete(data / ".npm" / "_cacache", data)
-    _delete(data / "skills" / ".hub" / "index-cache", data)
+    removed: list[tuple[Path, int]] = []
     try:
-        active, live_dirs, reason = _discover_active(data, project)
-    except CheckError as exc:
-        _log(f"skip {data / 'cache' / 'uv'} reason={exc}")
-        _log(f"skip {data / 'installs' / (STALE_INSTALL_PREFIX + '*')} reason={exc}")
+        _log_free("before", data)
+        if not data.is_dir():
+            _log(f"skip: {data} is not a directory")
+            _log_free("after", data)
+            return
+        _clean_rotated_logs(data, removed)
+        plugins = data / "plugins"
+        for name in PLUGIN_INSTALL_LEFTOVERS:
+            _delete_counted(plugins / name, data, removed)
+        _delete_counted(data / ".npm" / "_cacache", data, removed)
+        _delete_counted(data / "skills" / ".hub" / "index-cache", data, removed)
+        try:
+            active, live_dirs, reason = _discover_active(data, project)
+        except CheckError as exc:
+            _log(f"skip {data / 'cache' / 'uv'} reason={exc}")
+            _log(f"skip {data / 'installs' / (STALE_INSTALL_PREFIX + '*')} reason={exc}")
+            _log_free("after", data)
+            return
+        _log(f"active installs: {active if active is not None else 'none'} ({reason})")
+        _clean_cache(data, venv, live_dirs, removed)
+        _clean_stale_installs(data, active, reason, project, removed)
         _log_free("after", data)
-        return
-    _log(f"active installs: {active if active is not None else 'none'} ({reason})")
-    _clean_cache(data, venv, live_dirs)
-    _clean_stale_installs(data, active, reason)
-    _log_free("after", data)
+    finally:
+        _emit_summary(data, removed)
 
 
 def main(argv: list[str] | None = None) -> int:
