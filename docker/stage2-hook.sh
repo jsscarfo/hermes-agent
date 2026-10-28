@@ -85,6 +85,14 @@ fi
 # is a no-op if the dir already exists. (#18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
 
+# Reclaim approved stale paths on the data volume before the rest of boot
+# needs the space. The script logs each path, deletes only that allowlist,
+# and skips anything missing, referenced, or hardlinked to the live
+# toolchain. A failure must not block startup; the next boot retries.
+if [ -f /opt/hermes/docker/volume-cleanup.sh ]; then
+    /opt/hermes/docker/volume-cleanup.sh || echo "[volume-cleanup] failed; continuing boot" >&2
+fi
+
 # Numeric UID/GID validation: must be digits only, non-root, 1-65534.
 # NAS hosts such as Unraid commonly use low non-root IDs (99:100).
 validate_uid_gid() {

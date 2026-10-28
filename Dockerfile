@@ -270,13 +270,17 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# Hindsight's client and the embed package its plugin metadata requires are
+# baked for the same reason: the published venv is sealed, so a boot-time
+# plugin install cannot fetch them. External mode does not run the embedder.
+#
 # Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
     --out /opt/hermes/.venv --no-install-project --sealed \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix
+    --extra azure-identity --extra matrix --extra hindsight
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its
