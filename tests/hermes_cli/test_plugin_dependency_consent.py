@@ -2,12 +2,38 @@
 import json
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import plugins_cmd
+from hermes_cli import plugins_cmd_install
+from hermes_cli import plugins_manifest
 from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
+
+
+def test_consent_skipped_when_python_deps_already_satisfied(monkeypatch):
+    deps = ("example-client>=0.10.1,<1", "example-embed>=0.10.1,<1")
+    monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        plugins_cmd_install,
+        "_deps_already_satisfied",
+        lambda declared: declared == deps,
+    )
+
+    consented, reason = plugins_cmd._consent_python_deps(
+        "memory-plugin", deps, SimpleNamespace(print=lambda *args, **kwargs: None),
+    )
+
+    assert consented is True
+    assert reason is None
+
+
+def test_catalog_requires_hermes_permissive_when_version_unknown():
+    """Docker/Railway boots can report base_version unknown; the gate must stay permissive."""
+    assert plugins_manifest.version_satisfies(">=0.21.4", "unknown") is True
 
 
 @pytest.mark.parametrize('python_surface', [None, 'pyproject', 'legacy'])
