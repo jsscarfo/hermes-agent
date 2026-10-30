@@ -296,3 +296,98 @@ def test_missing_data_root_logs_free_space_and_skips(tmp_path: Path, capsys: pyt
     assert "free bytes before:" in output
     assert "free bytes after:" in output
     assert "is not a directory" in output
+    assert "summary removed=0 bytes_freed=0 paths=" in output
+    assert not missing.exists()
+
+
+def test_keeps_the_project_install_key_when_another_install_is_selected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The directory named sha256(/opt/hermes)[:16] is the live toolchain.
+
+    Another install with a selected environment used to make that directory
+    look like just another stale ``351f81cc*`` candidate. Cleanup must skip
+    it and may still remove a different directory with that prefix.
+    """
+    data = tmp_path / "data"
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    project = Path("/opt/hermes")
+    key = cleanup_mod.install_key(project)
+    assert key == "351f81cc06284494"
+
+    live = _stale(data, key)
+    doomed = _stale(data, "351f81ccdeadbeef")
+    other = _live_install(data, "abcdef0123456789")
+    doomed_bytes = cleanup_mod.byte_size(doomed)
+
+    output = _run(data, venv, project, capsys)
+
+    assert live.is_dir()
+    assert (live / "marker.txt").read_bytes() == b"stale-bytes"
+    assert not doomed.exists()
+    assert other.is_dir()
+    assert f"skip {live} bytes=" in output
+    assert f"reason=is the install key of {project}" in output
+    assert f"deleted {doomed}" in output
+
+    summary_path = data / "logs" / "volume-cleanup.log"
+    assert summary_path.is_file()
+    summary = summary_path.read_text(encoding="utf-8")
+    assert summary.endswith("\n")
+    assert summary.count("\n") == 1
+    assert summary.strip() in output
+    assert f"removed=1 bytes_freed={doomed_bytes} paths={doomed}" in summary
+    assert str(live) not in summary.split("paths=", 1)[1]
+    assert summary_path.resolve().is_relative_to(data.resolve())
+
+
+def test_summary_line_is_one_line_under_the_data_logs_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = tmp_path / "data"
+    venv = tmp_path / "venv"
+    project = tmp_path / "project"
+    venv.mkdir()
+    project.mkdir()
+    rotated = data / "logs" / "agent.log.1"
+    _write(rotated, b"rotated-agent-bytes")
+    expected = cleanup_mod.byte_size(rotated)
+    _live_install(data)
+
+    output = _run(data, venv, project, capsys)
+
+    summary_path = data / "logs" / "volume-cleanup.log"
+    text = summary_path.read_text(encoding="utf-8")
+    assert text.count("\n") == 1
+    assert text.strip() in output
+    assert f"summary removed=1 bytes_freed={expected} paths={rotated}" in text
+    assert not (tmp_path / "volume-cleanup.log").exists()
+    assert summary_path.resolve().is_relative_to(data.resolve())
+
+    second = _run(data, venv, project, capsys)
+    rewritten = summary_path.read_text(encoding="utf-8")
+    assert rewritten.count("\n") == 1
+    assert "summary removed=0 bytes_freed=0 paths=" in rewritten
+    assert rewritten.strip() in second
+
+
+def test_summary_file_is_not_written_outside_the_data_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = tmp_path / "data"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    data.mkdir()
+    (data / "logs").symlink_to(outside, target_is_directory=True)
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    _write(data / "plugins" / ".install-rqzgcdjx" / "partial.txt", b"partial")
+
+    output = _run(data, venv, tmp_path / "project", capsys)
+
+    assert list(outside.iterdir()) == []
+    assert not (outside / "volume-cleanup.log").exists()
+    assert "skip summary file reason=refuses to write outside" in output
+    assert "summary removed=1 " in output
+    assert "bytes_freed=" in output

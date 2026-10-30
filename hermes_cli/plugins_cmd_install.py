@@ -81,6 +81,23 @@ def _install_plugin_python_deps(
     return _consent_python_deps(manifest.get("name", "this plugin"), deps, console)
 
 
+def _deps_already_satisfied(deps: tuple[str, ...]) -> bool:
+    """True when every requirement in *deps* is installed at a matching version."""
+    from importlib.metadata import PackageNotFoundError, version
+    from packaging.requirements import Requirement
+
+    try:
+        for raw in deps:
+            req = Requirement(raw)
+            if req.marker is not None and not req.marker.evaluate():
+                continue
+            if not req.specifier.contains(version(req.name), prereleases=True):
+                return False
+    except (PackageNotFoundError, Exception):
+        return False
+    return True
+
+
 def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tuple[bool, Optional[str]]:
     """The y/N gate for Python deps entering the shared environment — install,
     reinstall AND an update that declares new ones all pass through here.
@@ -93,6 +110,11 @@ def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tu
             console.print(f"  - {dep}")
     else:
         console.print("  - (declared in its pyproject.toml)")
+
+    # Already satisfied by the active environment (e.g. baked into the image via
+    # an extra): nothing enters the shared environment, so no consent is needed.
+    if deps and _deps_already_satisfied(deps):
+        return True, None
 
     # A decline or non-interactive invocation leaves the new plugin disabled.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):

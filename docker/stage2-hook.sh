@@ -88,7 +88,10 @@ mkdir -p "$HERMES_HOME"
 # Reclaim approved stale paths on the data volume before the rest of boot
 # needs the space. The script logs each path, deletes only that allowlist,
 # and skips anything missing, referenced, or hardlinked to the live
-# toolchain. A failure must not block startup; the next boot retries.
+# toolchain. It never deletes the install directory whose name is the
+# sha256 install key of /opt/hermes. Stage2 output is easy to miss, so the
+# script also writes one summary line to /opt/data/logs/volume-cleanup.log.
+# A failure must not block startup; the next boot retries.
 if [ -f /opt/hermes/docker/volume-cleanup.sh ]; then
     /opt/hermes/docker/volume-cleanup.sh || echo "[volume-cleanup] failed; continuing boot" >&2
 fi
