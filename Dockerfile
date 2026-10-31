@@ -363,10 +363,21 @@ RUN /opt/hermes/.venv/bin/python -m docker.build_agent
 # read-only for the hermes user (go-w from the --chmod above).
 
 USER root
+# Bundled Hindsight provider. Copied after the assembler so it is not a
+# build input. No pyproject.toml and python_runtime: external, so PM does
+# not admit it and boot does not publish a new /opt/data generation.
+# Wheels are already in the sealed venv (--extra hindsight above).
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
     chmod 0755 /opt/hermes /opt/hermes/bin/hermes && \
-    printf 'docker\n' > /opt/hermes/.install_method
+    printf 'docker\n' > /opt/hermes/.install_method && \
+    rm -rf /opt/hermes/plugins/memory/hindsight && \
+    cp -a /opt/hermes/docker/bundled-hindsight /opt/hermes/plugins/memory/hindsight && \
+    chmod -R a+rX,go-w /opt/hermes/plugins/memory/hindsight && \
+    test -f /opt/hermes/plugins/memory/hindsight/__init__.py && \
+    test -f /opt/hermes/plugins/memory/hindsight/plugin.yaml && \
+    test ! -e /opt/hermes/plugins/memory/hindsight/pyproject.toml && \
+    test ! -e /opt/hermes/plugins/memory/hindsight/uv.lock
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a

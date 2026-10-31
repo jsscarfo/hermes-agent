@@ -96,6 +96,15 @@ if [ -f /opt/hermes/docker/volume-cleanup.sh ]; then
     /opt/hermes/docker/volume-cleanup.sh || echo "[volume-cleanup] failed; continuing boot" >&2
 fi
 
+# Root-owned leftovers under two deleted xena profiles. The hermes user
+# cannot unlink them. The script removes a directory only when its sole
+# content is knowledge/README.md, and it never touches other profiles or
+# tombstones under profiles/.deleted.
+if [ -f /opt/hermes/docker/cleanup-xena-leftovers.sh ]; then
+    /bin/sh /opt/hermes/docker/cleanup-xena-leftovers.sh "$HERMES_HOME" \
+        || echo "[xena-leftover] failed; continuing boot" >&2
+fi
+
 # Numeric UID/GID validation: must be digits only, non-root, 1-65534.
 # NAS hosts such as Unraid commonly use low non-root IDs (99:100).
 validate_uid_gid() {
