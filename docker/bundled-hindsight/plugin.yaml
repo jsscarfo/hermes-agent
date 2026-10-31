@@ -1,0 +1,11 @@
+# Image bundle of vectorize-io/hindsight @ 176f8c2de1369f569c489b831d143b78128b5535
+# (hindsight-integrations/hermes). The sealed image already has hindsight-client
+# and hindsight-embed from the hindsight extra. This directory is not a PM
+# workspace member: no pyproject.toml and no pip/python dependency list.
+# python_runtime external keeps a later declaration from joining the union,
+# which would publish a new toolchain generation onto the data volume.
+name: hindsight
+version: 1.0.1
+description: "Hindsight — long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval."
+python_runtime: external
+requires_env: []

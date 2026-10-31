@@ -1,0 +1,6 @@
+source: https://github.com/vectorize-io/hindsight
+commit: 176f8c2de1369f569c489b831d143b78128b5535
+path: hindsight-integrations/hermes
+license: MIT
+omitted: pyproject.toml uv.lock tests docs
+reason: wheels are already in the image extra "hindsight"; a PM member would copy tools/ into a new /opt/data generation
